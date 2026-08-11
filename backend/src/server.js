@@ -53,6 +53,7 @@ app.get('/api/users', H(() => db().users.map(uMeta)));
 app.post('/api/login', H((req, res) => {
   const u = db().users.find((x) => x.id === +req.body.userId);
   if (!u) throw bad('Unknown user');
+  if ((req.body.password || '') !== u.role) throw bad('Invalid password');
   const sid = crypto.randomUUID(); SESSIONS.set(sid, u.id);
   res.cookie('sid', sid, { httpOnly: true, sameSite: 'lax' });
   return uMeta(u);

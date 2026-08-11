@@ -20,9 +20,9 @@ function buildSeed() {
   const db = {
     seq: { borrower: 100, drawdown: 200, payment: 300, document: 400, notification: 500, limit: 600 },
     users: [
-      { id: 1, name: 'Sonali Bansal', role: 'manager' },
-      { id: 2, name: 'Ujjwal Mahajan', role: 'director' },
-      { id: 3, name: 'Credit Analyst', role: 'analyst' }
+      { id: 1, name: 'Manager', role: 'manager' },
+      { id: 2, name: 'Sonali Bansal', role: 'director' },
+      { id: 3, name: 'Ujjwal Mahajan', role: 'analyst' }
     ],
     borrowers: [], drawdowns: [], payments: [], documents: [], notifications: [], limitHistory: []
   };

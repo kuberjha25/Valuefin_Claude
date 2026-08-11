@@ -1,7 +1,7 @@
-import React from 'react';
+import React, { useState } from 'react';
 import { Landmark, PencilLine, ShieldCheck, LineChart } from 'lucide-react';
 import { api } from '../api.js';
-import { useLoad, useToast } from '../ui.jsx';
+import { useLoad, useToast, Modal } from '../ui.jsx';
 import { ROLE } from '../format.js';
 
 const BLURB = {
@@ -12,8 +12,38 @@ const BLURB = {
 
 export default function Login({ onAuth }) {
   const [users] = useLoad(() => api.get('/users'), []);
+  const [activeUser, setActiveUser] = useState(null);
+  const [password, setPassword] = useState('');
+  const [loading, setLoading] = useState(false);
   const toast = useToast();
-  const pick = async (u) => { try { onAuth(await api.post('/login', { userId: u.id })); } catch (e) { toast(e.message, true); } };
+
+  const openPasswordModal = (user) => {
+    setActiveUser(user);
+    setPassword('');
+  };
+
+  const closeModal = () => {
+    setActiveUser(null);
+    setPassword('');
+    setLoading(false);
+  };
+
+  const login = async () => {
+    if (!activeUser) return;
+    if (!password.trim()) {
+      toast('Enter the password for this user.', true);
+      return;
+    }
+    setLoading(true);
+    try {
+      const user = await api.post('/login', { userId: activeUser.id, password: password.trim() });
+      onAuth(user);
+    } catch (e) {
+      toast(e.message, true);
+      setLoading(false);
+    }
+  };
+
   return (
     <div className="min-h-screen bg-navy-950 grid place-items-center p-6">
       <div className="w-full max-w-md">
@@ -26,7 +56,7 @@ export default function Login({ onAuth }) {
           {(users || []).map((u) => {
             const b = BLURB[u.role] || {}; const Icon = b.icon || Landmark;
             return (
-              <button key={u.id} onClick={() => pick(u)}
+              <button key={u.id} onClick={() => openPasswordModal(u)}
                 className="w-full flex items-center gap-3.5 rounded-2xl bg-white/5 hover:bg-white/10 border border-white/10 hover:border-gold-400/40 px-4 py-3.5 text-left transition group">
                 <div className="rounded-xl bg-white/10 p-2.5 group-hover:bg-gold-500/20"><Icon size={20} className="text-gold-400" /></div>
                 <div className="flex-1 min-w-0">
@@ -40,6 +70,29 @@ export default function Login({ onAuth }) {
         </div>
         <p className="text-center text-xs text-slate-500 mt-6">New here? Sign in and open the <span className="text-slate-300">Guide</span> from the sidebar.</p>
       </div>
+
+      {activeUser && (
+        <Modal title={`Sign in as ${activeUser.name}`} onClose={closeModal}>
+          <div className="space-y-4">
+            <div className="text-sm text-slate-600">
+              Enter the password for <span className="font-semibold text-slate-900">{activeUser.name}</span>.
+              For now use the role name as the password: <span className="font-semibold">{activeUser.role}</span>.
+            </div>
+            <input
+              type="password"
+              value={password}
+              onChange={(e) => setPassword(e.target.value)}
+              className="w-full rounded-xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm text-slate-900 outline-none focus:border-gold-400"
+              placeholder="Password"
+              autoFocus
+            />
+            <div className="flex justify-end gap-2">
+              <button type="button" className="rounded-xl border border-slate-200 bg-white px-4 py-2 text-sm text-slate-700 hover:bg-slate-50" onClick={closeModal}>Cancel</button>
+              <button type="button" className="rounded-xl bg-gold-500 px-4 py-2 text-sm font-semibold text-white hover:bg-gold-600" onClick={login} disabled={loading}>{loading ? 'Signing in…' : 'Sign in'}</button>
+            </div>
+          </div>
+        </Modal>
+      )}
     </div>
   );
 }

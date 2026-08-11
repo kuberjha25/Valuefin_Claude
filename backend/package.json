@@ -4,12 +4,20 @@
   "private": true,
   "description": "Valuefin Desk — internal lending operations API (Express, port 4000). Borrowers, drawdowns, payments, auto ledger + MIS, document approval.",
   "main": "src/server.js",
-  "scripts": { "dev": "node --watch src/server.js", "start": "node src/server.js" },
-  "engines": { "node": ">=18.17" },
+  "scripts": {
+    "dev": "nodemon --watch src --ext js --exec node src/server.js",
+    "start": "node src/server.js"
+  },
+  "engines": {
+    "node": ">=18.17"
+  },
   "dependencies": {
     "cookie-parser": "1.4.6",
     "cors": "2.8.5",
     "express": "4.19.2",
     "multer": "2.0.2"
+  },
+  "devDependencies": {
+    "nodemon": "^3.1.14"
   }
 }

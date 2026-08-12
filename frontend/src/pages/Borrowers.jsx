@@ -6,6 +6,7 @@ import { useAuth } from '../App.jsx';
 import { Card, Chip, Empty, Field, Modal, Table, Td, useToast, ErrorNote, PageHead, Meter, Spinner } from '../ui.jsx';
 import { useLoad, useDebounced, useLocal } from '../hooks.js';
 import { fmt, fmtCr, pct, PRODUCT, today } from '../format.js';
+import { DOC_CATEGORIES, PdfDropzone, pdfProblem } from '../components/DocumentPanel.jsx';
 
 const STATES = [['', 'All'], ['open', 'With exposure'], ['overdue', 'Overdue'], ['idle', 'No exposure']];
 
@@ -140,11 +141,40 @@ export function BorrowerForm({ initial, onClose, onDone }) {
   const [busy, setBusy] = useState(false);
   const set = (k) => (e) => setF((s) => ({ ...s, [k]: e.target.value }));
 
+  /* Onboarding requires a document — a borrower cannot exist on the book with
+     nothing on file. Only enforced when creating; editing never touches it. */
+  const [doc, setDoc] = useState({ file: null, title: '', category: 'KYC' });
+  const [showDocError, setShowDocError] = useState(false);
+  const pickDoc = (file) => {
+    if (file === null) return setDoc((d) => ({ ...d, file: null }));
+    const problem = pdfProblem(file);
+    if (problem) return toast(problem, 'err');
+    setShowDocError(false);
+    setDoc((d) => ({ ...d, file, title: d.title || file.name.replace(/\.pdf$/i, '') }));
+  };
+
+  const FACILITY_FIELDS = ['name', 'biz', 'loanType', 'limit', 'rate', 'penRate', 'procFeePct', 'gstPct',
+    'tenure', 'tenureUnit', 'sanctionDate', 'contactName', 'contactEmail', 'contactPhone', 'pan', 'gstin'];
+
+  const incomplete = !String(f.name).trim() || !(+f.limit > 0) || (!editing && !doc.file);
+
   const save = async () => {
+    if (!editing && !doc.file) { setShowDocError(true); return toast('Attach the onboarding document to continue.', 'err'); }
     setBusy(true);
     try {
-      const r = editing ? await api.updateBorrower(initial.id, f) : await api.createBorrower(f);
-      toast(editing ? 'Facility updated.' : 'Borrower “' + r.name + '” onboarded.');
+      let r;
+      if (editing) {
+        r = await api.updateBorrower(initial.id, f);
+        toast('Facility updated.');
+      } else {
+        const form = new FormData();
+        FACILITY_FIELDS.forEach((k) => form.append(k, f[k] == null ? '' : String(f[k])));
+        form.append('file', doc.file);
+        form.append('docTitle', doc.title.trim() || doc.file.name.replace(/\.pdf$/i, ''));
+        form.append('docCategory', doc.category);
+        r = await api.createBorrower(form);
+        toast('Borrower “' + r.name + '” onboarded — document sent to the Director for review.');
+      }
       onDone(r.borrowerId);
     } catch (e) { toast(e.message, 'err'); setBusy(false); }
   };
@@ -156,7 +186,7 @@ export function BorrowerForm({ initial, onClose, onDone }) {
       onClose={onClose}
       footer={<>
         <button className="btn" onClick={onClose} disabled={busy}>Cancel</button>
-        <button className="btn btn-p" onClick={save} disabled={busy || !String(f.name).trim() || !(+f.limit > 0)}>
+        <button className="btn btn-p" onClick={save} disabled={busy || incomplete}>
           {busy && <Spinner />}{editing ? 'Save changes' : 'Add borrower'}
         </button>
       </>}>
@@ -209,10 +239,37 @@ export function BorrowerForm({ initial, onClose, onDone }) {
         </section>
 
         {!editing && (
-          <p className="flex items-center gap-2 rounded-xl border border-white/10 bg-white/[.04] px-3 py-2.5 text-xs text-slate-400">
-            <Users size={14} className="shrink-0 text-neon-violet" />
-            A document folder is created for this borrower on the server automatically.
-          </p>
+          <section>
+            <p className="ctitle mb-1 flex items-center gap-2">
+              Onboarding document
+              <span className="chip-bad normal-case tracking-normal">required</span>
+            </p>
+            <p className="mb-3 text-xs text-slate-500">
+              Attach the sanction letter, KYC pack or equivalent. It is filed in this borrower's folder and
+              goes to the Director for review — the borrower is not created without it.
+            </p>
+            <div className="mb-3 grid gap-3 sm:grid-cols-[1fr_11rem]">
+              <Field label="Document title">
+                <input className="inp" value={doc.title}
+                  onChange={(e) => setDoc((d) => ({ ...d, title: e.target.value }))}
+                  placeholder="e.g. Sanction letter — Acme Foods" />
+              </Field>
+              <Field label="Category">
+                <select className="inp" value={doc.category} onChange={(e) => setDoc((d) => ({ ...d, category: e.target.value }))}>
+                  {DOC_CATEGORIES.map((c) => <option key={c} value={c}>{c}</option>)}
+                </select>
+              </Field>
+            </div>
+            <PdfDropzone file={doc.file} onPick={pickDoc} compact invalid={showDocError}
+              hint="PDF only · up to 25 MB · filed against this borrower on creation" />
+            {showDocError && !doc.file && (
+              <p className="mt-2 text-xs font-semibold text-rose-300">An onboarding document is required.</p>
+            )}
+            <p className="mt-3 flex items-center gap-2 rounded-xl border border-white/10 bg-white/[.04] px-3 py-2.5 text-xs text-slate-400">
+              <Users size={14} className="shrink-0 text-neon-violet" />
+              The borrower and this document are saved together — if either fails, neither is kept.
+            </p>
+          </section>
         )}
       </div>
     </Modal>

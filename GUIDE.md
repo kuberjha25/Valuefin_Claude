@@ -127,7 +127,11 @@ Money operations are **direct entry** — there is no approval step on a drawdow
 
 1. **Add a borrower** — the facility, set once: product (PO Finance or Interest-Only), sanctioned
    limit, interest rate, penal charge, processing fee, GST, tenure, sanction date, and optional
-   contact/PAN/GSTIN. A document folder is created on the server.
+   contact/PAN/GSTIN. **An onboarding document is mandatory** — the sanction letter, KYC pack or
+   equivalent PDF is attached in the same form. The borrower row, its folder and that first document
+   are written in one transaction, so a facility can never exist on the book with nothing on file;
+   if either half fails, neither is kept. The document lands as **Pending review** for the Director
+   like any other upload. Deleting a borrower removes its folder and PDFs along with its records.
 2. **Record a drawdown** — PO reference, amount, debit date, advance-interest option. The desk
    computes advance interest, fee + GST and the **net disbursed**; the full amount is booked as
    outstanding principal. A drawdown that would breach the sanctioned limit is refused.

@@ -9,6 +9,7 @@ const repo = require('../repo');
 const calc = require('../calc');
 const auth = require('../auth');
 const audit = require('../audit');
+const docstore = require('../docstore');
 const { notify } = require('../notify');
 const { H, bad, notFound, reqStr, optStr, reqNum, optNum, reqDate, optDate, oneOf, reqId } = require('../http');
 
@@ -86,29 +87,59 @@ function readFacility(body, { partial = false } = {}) {
   };
 }
 
-router.post('/', H(async (req) => {
+/* Onboarding is multipart: the facility fields plus one mandatory PDF. A
+   borrower may not exist on this book without at least one document on file,
+   so the row and the document are written in a single transaction — if either
+   half fails, neither is kept. */
+router.post('/', docstore.upload.single('file'), H(async (req) => {
   const me = auth.requireWrite(req);
   const f = readFacility(req.body);
+
+  if (!req.file) {
+    throw bad('An onboarding document is required — attach the sanction letter, KYC or equivalent PDF.');
+  }
+  docstore.assertPdf(req.file);
+  const docCategory = oneOf(req.body.docCategory, 'Document category', docstore.CATEGORIES, 'KYC');
+  const docTitle = optStr(req.body.docTitle, 'Document title') || req.file.originalname.replace(/\.pdf$/i, '');
+
   const dupe = await q('SELECT id FROM borrowers WHERE name = ? LIMIT 1', [f.name]);
   if (dupe.length) throw bad('A borrower named “' + f.name + '” already exists.');
   const slug = await repo.uniqueSlug(f.name);
 
-  const r = await q(
-    `INSERT INTO borrowers (slug, name, biz, loan_type, base_limit, rate, pen_rate, proc_fee_pct, gst_pct,
-                            tenure, tenure_unit, sanction_date, contact_name, contact_email, contact_phone,
-                            pan, gstin, created_by)
-     VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
-    [slug, f.name, f.biz || '', f.loanType || 'po', f.limit, f.rate ?? 18, f.penRate ?? 6,
-      f.procFeePct ?? 1.5, f.gstPct ?? 18, f.tenure ?? 90, f.tenureUnit || 'days', f.sanctionDate,
-      f.contactName || '', f.contactEmail || '', f.contactPhone || '', f.pan || '', f.gstin || '', me.name]
-  );
-  try { fs.mkdirSync(path.join(config.paths.customers, slug), { recursive: true }); } catch (_) { /* folder is best-effort */ }
+  let written = null;
+  let result;
+  try {
+    result = await tx(async (cx) => {
+      const r = await cx.q(
+        `INSERT INTO borrowers (slug, name, biz, loan_type, base_limit, rate, pen_rate, proc_fee_pct, gst_pct,
+                                tenure, tenure_unit, sanction_date, contact_name, contact_email, contact_phone,
+                                pan, gstin, created_by)
+         VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+        [slug, f.name, f.biz || '', f.loanType || 'po', f.limit, f.rate ?? 18, f.penRate ?? 6,
+          f.procFeePct ?? 1.5, f.gstPct ?? 18, f.tenure ?? 90, f.tenureUnit || 'days', f.sanctionDate,
+          f.contactName || '', f.contactEmail || '', f.contactPhone || '', f.pan || '', f.gstin || '', me.name]
+      );
+      const borrower = { id: r.insertId, slug };
+      const doc = await docstore.saveDocument(cx.q, {
+        borrower, file: req.file, title: docTitle, category: docCategory, user: me
+      });
+      written = doc.abs;
+      return { borrowerId: r.insertId, doc };
+    });
+  } catch (e) {
+    docstore.discardFile(written);       // the row is gone; the file must go too
+    throw e;
+  }
 
-  await audit.log(req, 'borrower.create', 'borrower', r.insertId, me.name + ' onboarded ' + f.name,
-    { limit: f.limit, rate: f.rate, loanType: f.loanType });
+  await notify({ toRole: 'director', type: 'upload', docId: result.doc.id, borrowerId: result.borrowerId,
+    customerName: f.name,
+    message: me.name + ' onboarded ' + f.name + ' and filed “' + docTitle + '” — awaiting your review.' });
+  await audit.log(req, 'borrower.create', 'borrower', result.borrowerId,
+    me.name + ' onboarded ' + f.name + ' with “' + docTitle + '”',
+    { limit: f.limit, rate: f.rate, loanType: f.loanType, documentId: result.doc.id, docCategory });
 
-  const store = await repo.loadEngineStore({ borrowerId: r.insertId });
-  return calc.borrowerSummary(store, r.insertId);
+  const store = await repo.loadEngineStore({ borrowerId: result.borrowerId });
+  return Object.assign(calc.borrowerSummary(store, result.borrowerId), { document: await repo.getDocument(result.doc.id) });
 }));
 
 /* ---------------- update ---------------- */
@@ -183,8 +214,21 @@ router.delete('/:id', H(async (req) => {
     throw Object.assign(new Error('This borrower has ' + n + ' financial record(s). Only the Director can delete it.'), { status: 403 });
   }
 
+  const [{ docs }] = await q('SELECT COUNT(*) AS docs FROM documents WHERE borrower_id = ?', [id]);
   await q('DELETE FROM borrowers WHERE id = ?', [id]);   // cascades to the child tables
-  await audit.log(req, 'borrower.delete', 'borrower', id, me.name + ' deleted ' + b.name + ' (' + n + ' financial records)');
+
+  /* The cascade clears the document rows but not the PDFs they pointed at, so
+     remove the borrower's folder too — otherwise every deletion orphans files
+     on disk. Confined to the customers directory in case a slug is ever odd. */
+  try {
+    const folder = path.resolve(config.paths.customers, b.slug);
+    if (folder.startsWith(path.resolve(config.paths.customers) + path.sep) && fs.existsSync(folder)) {
+      fs.rmSync(folder, { recursive: true, force: true });
+    }
+  } catch (e) { console.error('[borrowers] could not remove document folder:', e.message); }
+
+  await audit.log(req, 'borrower.delete', 'borrower', id,
+    me.name + ' deleted ' + b.name + ' (' + n + ' financial records, ' + docs + ' document(s))');
   return { ok: true };
 }));
 

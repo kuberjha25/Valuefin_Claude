@@ -54,7 +54,9 @@ export const api = {
   /* ---- borrowers ---- */
   borrowers: (f) => req('/borrowers' + qs(f)),
   borrower: (id) => req('/borrowers/' + id),
-  createBorrower: (b) => req('/borrowers', { method: 'POST', json: b }),
+  /* Onboarding is multipart — the facility fields travel with the mandatory
+     onboarding PDF so the borrower and its first document are created together. */
+  createBorrower: (form) => req('/borrowers', { method: 'POST', body: form }),
   updateBorrower: (id, b) => req('/borrowers/' + id, { method: 'PUT', json: b }),
   deleteBorrower: (id) => req('/borrowers/' + id, { method: 'DELETE' }),
   addLimit: (id, body) => req('/borrowers/' + id + '/limit', { method: 'POST', json: body }),

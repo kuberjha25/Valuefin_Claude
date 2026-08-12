@@ -5,6 +5,59 @@ import { Chip, Confirm, Empty, Field, Modal, Spinner, Table, Td, useToast } from
 import { STATUS, fmtBytes, fmtDate, fmtAgo } from '../format.js';
 
 export const DOC_CATEGORIES = ['KYC', 'Financials', 'Sanction', 'Security', 'Invoice', 'PO', 'Bank statement', 'Other'];
+export const MAX_UPLOAD = 25 * 1024 * 1024;
+
+/* Validate a picked file the same way the server will, so the user hears about
+   a bad file before it goes over the wire. Returns an error string or null. */
+export function pdfProblem(file) {
+  if (!file) return 'Attach a PDF first.';
+  if (!/\.pdf$/i.test(file.name) && file.type !== 'application/pdf') return 'Only PDF files are accepted.';
+  if (file.size > MAX_UPLOAD) return 'That PDF is larger than 25 MB.';
+  return null;
+}
+
+/* ============================================================================
+   Reusable PDF picker — drag/drop or browse. Used by the upload dialog and by
+   borrower onboarding, so both behave identically.
+   ========================================================================== */
+export function PdfDropzone({ file, onPick, hint, compact, invalid }) {
+  const [drag, setDrag] = useState(false);
+  const inputRef = useRef(null);
+
+  if (file) {
+    return (
+      <div className="flex items-center gap-3 rounded-2xl border border-white/12 bg-white/[.05] px-4 py-3">
+        <span className="grid h-10 w-10 place-items-center rounded-xl bg-state-bad/15"><FileText size={18} className="text-rose-300" /></span>
+        <span className="min-w-0 flex-1">
+          <span className="block truncate text-sm font-semibold text-slate-100">{file.name}</span>
+          <span className="block text-xs text-slate-500">{fmtBytes(file.size)}</span>
+        </span>
+        <button className="btn btn-ghost btn-icon" onClick={() => onPick(null)} aria-label="Remove file"><X size={16} /></button>
+      </div>
+    );
+  }
+  return (
+    <div role="button" tabIndex={0} onClick={() => inputRef.current?.click()}
+      onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); inputRef.current?.click(); } }}
+      onDragOver={(e) => { e.preventDefault(); setDrag(true); }}
+      onDragLeave={() => setDrag(false)}
+      onDrop={(e) => { e.preventDefault(); setDrag(false); onPick(e.dataTransfer.files?.[0]); }}
+      className={'cursor-pointer rounded-3xl border-2 border-dashed text-center transition ' +
+        (compact ? 'px-5 py-6' : 'px-6 py-10') + ' ' +
+        (drag ? 'border-neon-violet bg-neon-indigo/10'
+          : invalid ? 'border-state-bad/50 bg-state-bad/[.06] hover:border-state-bad'
+            : 'border-white/15 hover:border-neon-violet/50 hover:bg-white/[.04]')}>
+      <span className={'mx-auto grid place-items-center rounded-2xl bg-neon-indigo/15 border border-neon-indigo/25 ' +
+        (compact ? 'mb-2 h-10 w-10' : 'mb-3 h-12 w-12')}>
+        <UploadIcon size={compact ? 17 : 20} className="text-neon-violet" />
+      </span>
+      <p className="text-sm font-semibold text-slate-200">Drop a PDF here, or click to browse</p>
+      <p className="mt-1 text-xs text-slate-500">{hint || "PDF only · up to 25 MB · stored in this borrower's folder on the server"}</p>
+      <input ref={inputRef} type="file" accept="application/pdf,.pdf" className="hidden"
+        onChange={(e) => { onPick(e.target.files?.[0]); e.target.value = ''; }} />
+    </div>
+  );
+}
 
 /* ============================================================================
    Upload — drag/drop or browse, PDF only, with a title and a category.
@@ -15,17 +68,15 @@ export function UploadDoc({ borrowerId, borrowerName, borrowers, onClose, onDone
   const [category, setCategory] = useState('Other');
   const [target, setTarget] = useState(String(borrowerId || ''));
   const [file, setFile] = useState(null);
-  const [drag, setDrag] = useState(false);
   const [busy, setBusy] = useState(false);
-  const inputRef = useRef(null);
   /* On the global Documents page the borrower is a choice; on a borrower's own
      page it is fixed and the picker is not rendered. */
   const choosable = Array.isArray(borrowers) && borrowers.length > 0;
 
   const pick = (f) => {
-    if (!f) return;
-    if (!/\.pdf$/i.test(f.name) && f.type !== 'application/pdf') return toast('Only PDF files are accepted.', 'err');
-    if (f.size > 25 * 1024 * 1024) return toast('That PDF is larger than 25 MB.', 'err');
+    if (f === null) return setFile(null);
+    const problem = pdfProblem(f);
+    if (problem) return toast(problem, 'err');
     setFile(f);
     if (!title) setTitle(f.name.replace(/\.pdf$/i, ''));
   };
@@ -68,34 +119,7 @@ export function UploadDoc({ borrowerId, borrowerName, borrowers, onClose, onDone
         </Field>
       </div>
 
-      <div className="mt-4">
-        {!file ? (
-          <div role="button" tabIndex={0} onClick={() => inputRef.current?.click()}
-            onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') inputRef.current?.click(); }}
-            onDragOver={(e) => { e.preventDefault(); setDrag(true); }}
-            onDragLeave={() => setDrag(false)}
-            onDrop={(e) => { e.preventDefault(); setDrag(false); pick(e.dataTransfer.files?.[0]); }}
-            className={'cursor-pointer rounded-3xl border-2 border-dashed px-6 py-10 text-center transition ' +
-              (drag ? 'border-neon-violet bg-neon-indigo/10' : 'border-white/15 hover:border-neon-violet/50 hover:bg-white/[.04]')}>
-            <span className="mx-auto mb-3 grid h-12 w-12 place-items-center rounded-2xl bg-neon-indigo/15 border border-neon-indigo/25">
-              <UploadIcon size={20} className="text-neon-violet" />
-            </span>
-            <p className="text-sm font-semibold text-slate-200">Drop a PDF here, or click to browse</p>
-            <p className="mt-1 text-xs text-slate-500">PDF only · up to 25 MB · stored in this borrower's folder on the server</p>
-            <input ref={inputRef} type="file" accept="application/pdf,.pdf" className="hidden"
-              onChange={(e) => pick(e.target.files?.[0])} />
-          </div>
-        ) : (
-          <div className="flex items-center gap-3 rounded-2xl border border-white/12 bg-white/[.05] px-4 py-3">
-            <span className="grid h-10 w-10 place-items-center rounded-xl bg-state-bad/15"><FileText size={18} className="text-rose-300" /></span>
-            <span className="min-w-0 flex-1">
-              <span className="block truncate text-sm font-semibold text-slate-100">{file.name}</span>
-              <span className="block text-xs text-slate-500">{fmtBytes(file.size)}</span>
-            </span>
-            <button className="btn btn-ghost btn-icon" onClick={() => setFile(null)} aria-label="Remove file"><X size={16} /></button>
-          </div>
-        )}
-      </div>
+      <div className="mt-4"><PdfDropzone file={file} onPick={pick} /></div>
     </Modal>
   );
 }

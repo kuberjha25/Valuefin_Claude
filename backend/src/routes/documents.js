@@ -4,7 +4,6 @@
 const fs = require('fs');
 const path = require('path');
 const express = require('express');
-const multer = require('multer');
 const config = require('../config');
 const { q } = require('../db/pool');
 const repo = require('../repo');
@@ -14,16 +13,8 @@ const { notify } = require('../notify');
 const { H, bad, notFound, optStr, reqId, oneOf } = require('../http');
 
 const router = express.Router();
-const CATEGORIES = ['KYC', 'Financials', 'Sanction', 'Security', 'Invoice', 'PO', 'Bank statement', 'Other'];
-
-const upload = multer({
-  storage: multer.memoryStorage(),
-  limits: { fileSize: config.uploadMaxBytes, files: 1 }
-});
-
-/* A PDF starts with "%PDF-". Checking the bytes stops a renamed .exe getting in
-   where the declared mimetype alone would not. */
-const looksLikePdf = (buf) => buf && buf.length > 4 && buf.slice(0, 5).toString('latin1') === '%PDF-';
+const docstore = require('../docstore');
+const { CATEGORIES, upload } = docstore;
 
 const SELECT = `SELECT d.*, b.name AS borrower_name FROM documents d JOIN borrowers b ON b.id = d.borrower_id`;
 
@@ -58,33 +49,18 @@ const uploadHandler = (req, res, next) => {
       const b = await repo.getBorrower(borrowerId);
       if (!b) throw notFound('Borrower not found.');
 
-      const f = req.file;
-      if (!f) throw bad('Attach a PDF to upload.');
-      const isPdf = (f.mimetype === 'application/pdf' || /\.pdf$/i.test(f.originalname)) && looksLikePdf(f.buffer);
-      if (!isPdf) throw bad('Only genuine PDF files are accepted.');
-
+      const f = docstore.assertPdf(req.file);
       const category = oneOf(req.body.category, 'Category', CATEGORIES, 'Other');
       const title = optStr(req.body.title, 'Title') || f.originalname.replace(/\.pdf$/i, '');
 
-      const folder = path.join(config.paths.customers, b.slug);
-      fs.mkdirSync(folder, { recursive: true });
-      const safe = f.originalname.replace(/\.pdf$/i, '').replace(/[^a-zA-Z0-9._-]+/g, '_').slice(0, 80);
-      const stored = Date.now() + '-' + safe + '.pdf';
-      const relPath = path.posix.join('customers', b.slug, stored);
-      fs.writeFileSync(path.join(folder, stored), f.buffer);
+      const doc = await docstore.saveDocument(q, { borrower: b, file: f, title, category, user: me });
 
-      const r = await q(
-        `INSERT INTO documents (borrower_id, title, filename, stored_name, rel_path, size_bytes, category,
-                                uploaded_by_id, uploaded_by)
-         VALUES (?,?,?,?,?,?,?,?,?)`,
-        [borrowerId, title, f.originalname.slice(0, 255), stored, relPath, f.size, category, me.id, me.name]);
-
-      await notify({ toRole: 'director', type: 'upload', docId: r.insertId, borrowerId, customerName: b.name,
+      await notify({ toRole: 'director', type: 'upload', docId: doc.id, borrowerId, customerName: b.name,
         message: me.name + ' uploaded “' + title + '” for ' + b.name + ' — awaiting your review.' });
-      await audit.log(req, 'document.upload', 'document', r.insertId,
+      await audit.log(req, 'document.upload', 'document', doc.id,
         me.name + ' uploaded “' + title + '” for ' + b.name, { category, size: f.size });
 
-      res.json(await repo.getDocument(r.insertId));
+      res.json(await repo.getDocument(doc.id));
     } catch (e) { next(e); }
   });
 };

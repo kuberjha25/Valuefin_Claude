@@ -1,86 +1,219 @@
 import React, { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { Plus, Users, ChevronRight } from 'lucide-react';
-import { api } from '../api.js';
+import { Plus, Users, ChevronRight, Download, Search, SlidersHorizontal } from 'lucide-react';
+import { api, downloadCSV } from '../api.js';
 import { useAuth } from '../App.jsx';
-import { Card, Chip, Empty, Field, Modal, Table, Td, useLoad, useToast } from '../ui.jsx';
-import { fmt, fmtCr, pct } from '../format.js';
+import { Card, Chip, Empty, Field, Modal, Table, Td, useToast, ErrorNote, PageHead, Meter, Spinner } from '../ui.jsx';
+import { useLoad, useDebounced, useLocal } from '../hooks.js';
+import { fmt, fmtCr, pct, PRODUCT, today } from '../format.js';
+
+const STATES = [['', 'All'], ['open', 'With exposure'], ['overdue', 'Overdue'], ['idle', 'No exposure']];
 
 export default function Borrowers() {
   const user = useAuth();
   const nav = useNavigate();
-  const [rows, reload] = useLoad(() => api.get('/borrowers'), []);
-  const [open, setOpen] = useState(false);
   const canEdit = user.role !== 'analyst';
-  if (!rows) return <Empty>Loading borrowers…</Empty>;
+
+  const [term, setTerm] = useState('');
+  const q = useDebounced(term, 250);
+  const [state, setState] = useLocal('borrowers.state', '');
+  const [sort, setSort] = useLocal('borrowers.sort', 'outstanding');
+  const [adding, setAdding] = useState(false);
+
+  const { data: rows, error, loading, reload } = useLoad(
+    () => api.borrowers({ q, state, sort, dir: sort === 'name' ? 'asc' : 'desc' }), [q, state, sort]);
+
+  const exportCSV = () => {
+    downloadCSV('valuefin_borrowers_' + today() + '.csv',
+      ['Borrower', 'Sector', 'Product', 'Rate %', 'Sanctioned', 'Outstanding', 'Available', 'Utilisation %',
+        'Active drawdowns', 'Interest earned', 'Income booked', 'Accrued', 'Overdue days', 'IRR %'],
+      (rows || []).map((b) => [b.name, b.biz, PRODUCT[b.loanType].label, b.rate, Math.round(b.limit),
+        Math.round(b.outstanding), Math.round(b.available), b.utilPct, b.activeDrawdowns,
+        Math.round(b.interestEarned), Math.round(b.incomeBooked), Math.round(b.accruedOpen), b.overdueDays,
+        b.irr != null ? b.irr.toFixed(1) : '']));
+  };
+
+  const totals = (rows || []).reduce((t, b) => ({
+    limit: t.limit + b.limit, outstanding: t.outstanding + b.outstanding, income: t.income + b.incomeBooked
+  }), { limit: 0, outstanding: 0, income: 0 });
+
   return (
     <div className="space-y-5">
-      <div className="flex items-center justify-between">
-        <div>
-          <h1 className="font-display font-extrabold text-2xl text-navy-900">Borrowers</h1>
-          <p className="text-sm text-slate-500">Every facility, its utilisation and yield. Click a row to manage drawdowns, payments, ledger & documents.</p>
-        </div>
-        {canEdit && <button className="btn btn-p" onClick={() => setOpen(true)}><Plus size={15} /> Add borrower</button>}
-      </div>
+      <PageHead icon={Users} title="Borrowers"
+        subtitle="Every facility with its live utilisation and yield. Open a row to manage drawdowns, payments, limits and documents.">
+        <button className="btn" onClick={exportCSV} disabled={!rows?.length}><Download size={15} /> CSV</button>
+        {canEdit && <button className="btn btn-p" onClick={() => setAdding(true)}><Plus size={15} /> Add borrower</button>}
+      </PageHead>
 
       <Card>
-        <Table cols={['Borrower', 'Type', '#Limit', '#Outstanding', '#Util', '#Active', '#IRR', '']} rows={rows}
-          render={(b) => (<>
-            <td>
-              <button className="text-left group" onClick={() => nav('/borrowers/' + b.borrowerId)}>
-                <div className="font-semibold text-navy-900 group-hover:text-teal-600 flex items-center gap-2">
-                  {b.name}
-                  {rows.length && b.name === 'PML Pvt Ltd' && <Chip cls="bg-gold-500/15 text-gold-500">reference</Chip>}
-                </div>
-              </button>
-            </td>
-            <Td><Chip cls={b.loanType === 'io' ? 'bg-navy-900/10 text-navy-900' : 'bg-teal-600/10 text-teal-700'}>{b.loanType === 'io' ? 'Interest-Only' : 'PO Finance'}</Chip></Td>
-            <Td r>{fmtCr(b.limit)}</Td>
-            <Td r className="font-semibold">{fmtCr(b.outstanding)}</Td>
-            <Td r className={b.utilPct > 90 ? 'text-rose-600 font-semibold' : ''}>{b.utilPct}%</Td>
-            <Td r>{b.activeDrawdowns}</Td>
-            <Td r className="text-slate-500">{pct(b.irr)}</Td>
-            <Td><button className="text-slate-300 hover:text-teal-600" onClick={() => nav('/borrowers/' + b.borrowerId)}><ChevronRight size={18} /></button></Td>
-          </>)} empty={canEdit ? 'No borrowers yet — add your first facility.' : 'No borrowers yet.'} />
+        <div className="mb-4 flex flex-wrap items-end gap-3">
+          <label className="relative min-w-[15rem] flex-1">
+            <span className="lbl">Search</span>
+            <Search size={15} className="pointer-events-none absolute bottom-2.5 left-3 text-slate-500" />
+            <input className="inp pl-9" value={term} onChange={(e) => setTerm(e.target.value)} placeholder="Name or sector…" />
+          </label>
+          <Field label="Exposure" className="w-44">
+            <select className="inp" value={state} onChange={(e) => setState(e.target.value)}>
+              {STATES.map(([v, l]) => <option key={v} value={v}>{l}</option>)}
+            </select>
+          </Field>
+          <Field label="Sort by" className="w-48">
+            <select className="inp" value={sort} onChange={(e) => setSort(e.target.value)}>
+              <option value="outstanding">Outstanding</option>
+              <option value="limit">Sanctioned limit</option>
+              <option value="utilPct">Utilisation</option>
+              <option value="irr">IRR</option>
+              <option value="incomeBooked">Income booked</option>
+              <option value="name">Name (A–Z)</option>
+            </select>
+          </Field>
+          {loading && <span className="pb-2.5 text-slate-500"><Spinner /></span>}
+        </div>
+
+        {error ? <ErrorNote onRetry={reload}>{error}</ErrorNote> : (
+          <Table loading={loading && !rows} cols={['Borrower', 'Product', '#Sanctioned', '#Outstanding', 'Utilisation', '#Active', '#Income', '#IRR', '']}
+            rows={rows || []}
+            empty={<Empty icon={SlidersHorizontal} title={term || state ? 'No borrowers match those filters' : 'No borrowers yet'}
+              action={canEdit && !term && !state ? <button className="btn btn-p" onClick={() => setAdding(true)}><Plus size={15} /> Add the first facility</button> : null}>
+              {term || state ? 'Clear the search or exposure filter to see the whole book.' : 'Add a facility to start recording drawdowns and payments.'}
+            </Empty>}
+            render={(b) => (
+              <>
+                <td>
+                  <button className="group text-left" onClick={() => nav('/borrowers/' + b.borrowerId)}>
+                    <span className="flex items-center gap-2">
+                      <span className="font-semibold text-slate-100 transition group-hover:text-neon-violet">{b.name}</span>
+                      {b.isSample && <Chip cls="chip-pink">reference</Chip>}
+                      {b.overdueDays > 0 && <Chip cls="chip-bad">{b.overdueDays}d overdue</Chip>}
+                    </span>
+                    <span className="mt-0.5 block text-[11px] text-slate-500">{b.biz || '—'} · {b.rate}% p.a. · {b.tenure} {b.tenureUnit}</span>
+                  </button>
+                </td>
+                <Td><Chip cls={PRODUCT[b.loanType].cls}>{PRODUCT[b.loanType].label}</Chip></Td>
+                <Td r>{fmtCr(b.limit)}</Td>
+                <Td r className="font-semibold text-slate-100">{fmtCr(b.outstanding)}</Td>
+                <td className="w-40">
+                  <Meter value={b.outstanding} max={b.limit || 1} />
+                  <span className={'mt-1 block text-[11px] num ' + (b.utilPct > 90 ? 'text-rose-300' : 'text-slate-500')}>{b.utilPct}%</span>
+                </td>
+                <Td r>{b.activeDrawdowns}</Td>
+                <Td r className="text-slate-400">{fmtCr(b.incomeBooked)}</Td>
+                <Td r className={b.irr >= 0 ? 'text-emerald-300' : 'text-rose-300'}>{pct(b.irr)}</Td>
+                <Td>
+                  <button className="btn btn-ghost btn-xs" onClick={() => nav('/borrowers/' + b.borrowerId)} aria-label={'Open ' + b.name}>
+                    <ChevronRight size={16} />
+                  </button>
+                </Td>
+              </>
+            )}
+            footer={rows && rows.length > 1 ? (
+              <tr className="border-t border-white/10">
+                <td className="py-2.5 px-3 text-[11px] font-semibold uppercase tracking-wide text-slate-500">{rows.length} borrowers</td>
+                <td />
+                <td className="px-3 text-right num text-slate-300">{fmtCr(totals.limit)}</td>
+                <td className="px-3 text-right num font-semibold text-white">{fmtCr(totals.outstanding)}</td>
+                <td colSpan={2} />
+                <td className="px-3 text-right num text-slate-300">{fmtCr(totals.income)}</td>
+                <td colSpan={2} />
+              </tr>
+            ) : null} />
+        )}
       </Card>
 
-      {open && <AddBorrower onClose={() => setOpen(false)} onDone={(id) => { setOpen(false); reload(); if (id) nav('/borrowers/' + id); }} />}
+      {adding && <BorrowerForm onClose={() => setAdding(false)} onDone={(id) => { setAdding(false); reload(); if (id) nav('/borrowers/' + id); }} />}
     </div>
   );
 }
 
-function AddBorrower({ onClose, onDone }) {
+/* ============================================================================
+   Add / edit facility. Used by this page and by the borrower detail page.
+   ========================================================================== */
+export function BorrowerForm({ initial, onClose, onDone }) {
   const toast = useToast();
-  const [b, setB] = useState({ name: '', biz: '', loanType: 'po', limit: '', rate: '18', penRate: '6', procFeePct: '1.5', gstPct: '18', tenure: '90', tenureUnit: 'days', sanctionDate: new Date().toISOString().slice(0, 10) });
-  const set = (k) => (e) => setB({ ...b, [k]: e.target.value });
+  const editing = !!initial;
+  const [f, setF] = useState(() => ({
+    name: '', biz: '', loanType: 'po', limit: '', rate: '18', penRate: '6', procFeePct: '1.5', gstPct: '18',
+    tenure: '90', tenureUnit: 'days', sanctionDate: today(),
+    contactName: '', contactEmail: '', contactPhone: '', pan: '', gstin: '', status: 'active',
+    ...(initial || {})
+  }));
+  const [busy, setBusy] = useState(false);
+  const set = (k) => (e) => setF((s) => ({ ...s, [k]: e.target.value }));
+
   const save = async () => {
-    try { const r = await api.post('/borrowers', b); toast('Borrower “' + r.name + '” added.'); onDone(r.borrowerId); }
-    catch (e) { toast(e.message, true); }
+    setBusy(true);
+    try {
+      const r = editing ? await api.updateBorrower(initial.id, f) : await api.createBorrower(f);
+      toast(editing ? 'Facility updated.' : 'Borrower “' + r.name + '” onboarded.');
+      onDone(r.borrowerId);
+    } catch (e) { toast(e.message, 'err'); setBusy(false); }
   };
+
   return (
-    <Modal title="Add borrower" onClose={onClose} wide>
-      <div className="grid grid-cols-2 gap-3">
-        <Field label="Borrower name" className="col-span-2"><input className="inp" autoFocus value={b.name} onChange={set('name')} placeholder="e.g. Acme Foods Pvt Ltd" /></Field>
-        <Field label="Business / sector"><input className="inp" value={b.biz} onChange={set('biz')} placeholder="e.g. FMCG distribution" /></Field>
-        <Field label="Product">
-          <select className="inp" value={b.loanType} onChange={set('loanType')}>
-            <option value="po">PO Finance / Working Capital</option>
-            <option value="io">Interest-Only (Bullet)</option>
-          </select>
-        </Field>
-        <Field label="Sanctioned limit (₹)"><input type="number" className="inp" value={b.limit} onChange={set('limit')} placeholder="e.g. 5000000" /></Field>
-        <Field label="Sanction date"><input type="date" className="inp" value={b.sanctionDate} onChange={set('sanctionDate')} /></Field>
-        <Field label="Interest rate (% p.a.)"><input type="number" className="inp" value={b.rate} onChange={set('rate')} /></Field>
-        <Field label="Penal charge (% p.a. extra)"><input type="number" className="inp" value={b.penRate} onChange={set('penRate')} /></Field>
-        <Field label="Processing fee (%)"><input type="number" className="inp" value={b.procFeePct} onChange={set('procFeePct')} /></Field>
-        <Field label="GST on fee (%)"><input type="number" className="inp" value={b.gstPct} onChange={set('gstPct')} /></Field>
-        <Field label="Tenure"><input type="number" className="inp" value={b.tenure} onChange={set('tenure')} /></Field>
-        <Field label="Tenure unit"><select className="inp" value={b.tenureUnit} onChange={set('tenureUnit')}><option value="days">Days</option><option value="months">Months</option></select></Field>
-      </div>
-      <p className="text-xs text-slate-500 mt-3 flex items-center gap-1.5"><Users size={13} /> A document folder is created on the server for this borrower automatically.</p>
-      <div className="flex justify-end gap-2 mt-4">
-        <button className="btn" onClick={onClose}>Cancel</button>
-        <button className="btn btn-p" disabled={!b.name.trim()} onClick={save}>Add borrower</button>
+    <Modal size="lg" title={editing ? 'Edit facility · ' + initial.name : 'Add borrower'}
+      subtitle={editing ? 'Rate and tenure changes re-price every open drawdown from its own payment history.'
+        : 'Set the facility once — drawdowns inherit these terms.'}
+      onClose={onClose}
+      footer={<>
+        <button className="btn" onClick={onClose} disabled={busy}>Cancel</button>
+        <button className="btn btn-p" onClick={save} disabled={busy || !String(f.name).trim() || !(+f.limit > 0)}>
+          {busy && <Spinner />}{editing ? 'Save changes' : 'Add borrower'}
+        </button>
+      </>}>
+      <div className="space-y-5">
+        <section className="grid gap-3 sm:grid-cols-2">
+          <Field label="Borrower name" className="sm:col-span-2">
+            <input className="inp" autoFocus value={f.name} onChange={set('name')} placeholder="e.g. Acme Foods Pvt Ltd" />
+          </Field>
+          <Field label="Business / sector"><input className="inp" value={f.biz || ''} onChange={set('biz')} placeholder="e.g. FMCG distribution" /></Field>
+          <Field label="Product">
+            <select className="inp" value={f.loanType} onChange={set('loanType')}>
+              <option value="po">PO Finance / Working Capital</option>
+              <option value="io">Interest-Only (Bullet)</option>
+            </select>
+          </Field>
+        </section>
+
+        <section>
+          <p className="ctitle mb-3">Commercials</p>
+          <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
+            <Field label="Sanctioned limit (₹)" hint={editing ? 'Base limit — enhancements are tracked separately' : null}>
+              <input type="number" min="0" className="inp" value={f.limit} onChange={set('limit')} placeholder="5000000" />
+            </Field>
+            <Field label="Sanction date"><input type="date" className="inp" value={f.sanctionDate} onChange={set('sanctionDate')} /></Field>
+            <Field label="Interest rate (% p.a.)"><input type="number" step="0.01" className="inp" value={f.rate} onChange={set('rate')} /></Field>
+            <Field label="Penal charge (% p.a. extra)"><input type="number" step="0.01" className="inp" value={f.penRate} onChange={set('penRate')} /></Field>
+            <Field label="Processing fee (%)"><input type="number" step="0.01" className="inp" value={f.procFeePct} onChange={set('procFeePct')} /></Field>
+            <Field label="GST on fee (%)"><input type="number" step="0.01" className="inp" value={f.gstPct} onChange={set('gstPct')} /></Field>
+            <Field label="Tenure"><input type="number" min="1" className="inp" value={f.tenure} onChange={set('tenure')} /></Field>
+            <Field label="Tenure unit">
+              <select className="inp" value={f.tenureUnit} onChange={set('tenureUnit')}><option value="days">Days</option><option value="months">Months</option></select>
+            </Field>
+            {editing && (
+              <Field label="Facility status">
+                <select className="inp" value={f.status} onChange={set('status')}><option value="active">Active</option><option value="closed">Closed</option></select>
+              </Field>
+            )}
+          </div>
+        </section>
+
+        <section>
+          <p className="ctitle mb-3">Contact &amp; identifiers <span className="normal-case tracking-normal text-slate-600">(optional)</span></p>
+          <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
+            <Field label="Contact name"><input className="inp" value={f.contactName || ''} onChange={set('contactName')} /></Field>
+            <Field label="Contact email"><input type="email" className="inp" value={f.contactEmail || ''} onChange={set('contactEmail')} /></Field>
+            <Field label="Contact phone"><input className="inp" value={f.contactPhone || ''} onChange={set('contactPhone')} /></Field>
+            <Field label="PAN"><input className="inp font-mono uppercase" value={f.pan || ''} onChange={set('pan')} placeholder="AAACA1234M" /></Field>
+            <Field label="GSTIN"><input className="inp font-mono uppercase" value={f.gstin || ''} onChange={set('gstin')} placeholder="27AAACA1234M1ZP" /></Field>
+          </div>
+        </section>
+
+        {!editing && (
+          <p className="flex items-center gap-2 rounded-xl border border-white/10 bg-white/[.04] px-3 py-2.5 text-xs text-slate-400">
+            <Users size={14} className="shrink-0 text-neon-violet" />
+            A document folder is created for this borrower on the server automatically.
+          </p>
+        )}
       </div>
     </Modal>
   );

@@ -1,23 +1,30 @@
 'use strict';
 /* ============================================================================
-   Valuefin Desk — calculation engine
+   Valuefin Desk — calculation engine (pure, no I/O)
+
    Ported line-for-line in behaviour from the production po_finance_cloud.html
    loan tool so every number matches: one-day-inclusive day count, 365-day
    daily rate, advance-interest modes, processing fee + GST, PO overdue/penal
    accrual, Interest-Only accrual, interest→principal payment waterfall,
    Newton-Raphson IRR, and the consolidated ledger + per-borrower statement.
+
+   Every function here takes plain objects and returns plain objects. The
+   "store" argument is the in-memory shape produced by repo.loadEngineStore().
    ========================================================================== */
 
-const round = (n) => Math.round((+n || 0));
-const dr = (r) => (+r || 0) / 100 / 365;                       // daily rate (365-day year)
+const money = (n) => Math.round((+n || 0) * 100) / 100;          // 2dp, no float dust
+const dr = (r) => (+r || 0) / 100 / 365;                          // daily rate (365-day year)
 const td = () => new Date().toISOString().slice(0, 10);
-const di = (d1, d2) => Math.round((new Date(d2) - new Date(d1)) / 86400000) + 1; // inclusive of both ends
+const di = (d1, d2) => Math.round((new Date(d2) - new Date(d1)) / 86400000) + 1; // inclusive both ends
 const addYearISO = (d) => { if (!d) return ''; const x = new Date(d); x.setFullYear(x.getFullYear() + 1); return x.toISOString().slice(0, 10); };
+const addDaysISO = (d, n) => { const x = new Date(d); x.setDate(x.getDate() + n); return x.toISOString().slice(0, 10); };
 
 function tenureDays(b) {
   const tn = parseFloat(b.tenure) || 90;
   return b.tenureUnit === 'months' ? Math.round(tn * 30.4375) : tn;
 }
+/* The date a drawdown falls overdue: debit date + tenure (day count inclusive). */
+function dueDate(dd, b) { return addDaysISO(dd.bankDebit, tenureDays(b) - 1); }
 
 /* advance-interest window: none | 30d | 1m | 2m | custom days */
 function advance(amt, rate, mode, cd) {
@@ -34,20 +41,19 @@ function feeCalc(amt, feePct, gstPct) {
   return { fee: f, gst: g, total: f + g };
 }
 
-/* build a drawdown record from raw inputs + its borrower */
+/* Build a drawdown record from raw inputs + its borrower. */
 function computeDrawdown(input, b) {
-  const poAmt = +input.poAmt || 0;
-  const mode = input.mode || 'none';
+  const poAmt = money(input.poAmt);
+  const mode = ['none', '30d', '1m', '2m', 'custom'].includes(input.mode) ? input.mode : 'none';
   const { adv, ad } = advance(poAmt, b.rate, mode, input.cd);
-  const feePct = input.feePct != null ? +input.feePct : (+b.procFeePct || 0);
+  const feePct = input.feePct != null && input.feePct !== '' ? +input.feePct : (+b.procFeePct || 0);
   const { fee, gst } = feeCalc(poAmt, feePct, b.gstPct);
-  const disbursed = poAmt - adv - fee - gst;
   return {
-    ref: input.ref || '', poAmt, bankDebit: input.bankDebit || td(),
-    mode, cd: mode === 'custom' ? (+input.cd || 30) : null, ad, adv,
-    feePct, fee, gstAmt: gst, disbursed,
+    ref: String(input.ref || '').trim(), poAmt, bankDebit: input.bankDebit || td(),
+    mode, cd: mode === 'custom' ? (+input.cd || 30) : null, ad, adv: money(adv),
+    feePct, fee: money(fee), gstAmt: money(gst), disbursed: money(poAmt - adv - fee - gst),
     outPrin: poAmt, intOverhang: 0, intCollected: 0,
-    loanType: b.loanType || 'po', status: 'Open', rem: input.rem || ''
+    loanType: b.loanType || 'po', status: 'Open', rem: String(input.rem || '').trim()
   };
 }
 
@@ -81,9 +87,14 @@ function ioNetDue(dd, b, toDate, payments) {
   return Math.max(0, ioAccrued(dd, b, toDate) - ioCollected(dd.id, payments));
 }
 
-/* unified payment waterfall — interest (incl. penal + overhang) first, then principal */
+/* Interest accrued to a date, whichever product this drawdown is. */
+function accruedFor(dd, b, toDate, payments) {
+  return dd.loanType === 'io' ? ioNetDue(dd, b, toDate, payments || []) : poAccrued(dd, b, toDate).total;
+}
+
+/* Unified payment waterfall — interest (incl. penal + overhang) first, then principal. */
 function allocatePayment(dd, b, amount, date, payments) {
-  amount = +amount || 0;
+  amount = money(amount);
   if (dd.loanType === 'io') {
     const accrued = ioAccrued(dd, b, date);
     const collected = ioCollected(dd.id, payments);
@@ -91,7 +102,8 @@ function allocatePayment(dd, b, amount, date, payments) {
     const intAdj = Math.min(amount, intDueNet);
     const prinAdj = Math.min(Math.max(0, amount - intAdj), +dd.outPrin || 0);
     const outAfter = Math.max(0, (+dd.outPrin || 0) - prinAdj);
-    return { accrued: intDueNet, intAdj, prinAdj, outAfter, overhang: 0, closed: outAfter === 0 && prinAdj > 0, kind: prinAdj > 0 ? 'io_close' : 'io_interest' };
+    return { accrued: intDueNet, intAdj: money(intAdj), prinAdj: money(prinAdj), outAfter: money(outAfter),
+      overhang: 0, closed: outAfter < 0.005 && prinAdj > 0, kind: prinAdj > 0 ? 'io_close' : 'io_interest' };
   }
   const acc = poAccrued(dd, b, date);
   const iDue = Math.max(0, acc.total);
@@ -99,7 +111,48 @@ function allocatePayment(dd, b, amount, date, payments) {
   if (amount >= iDue) { intAdj = iDue; prinAdj = Math.min(amount - iDue, +dd.outPrin || 0); }
   else { intAdj = amount; overhang = iDue - amount; }
   const outAfter = Math.max(0, (+dd.outPrin || 0) - prinAdj);
-  return { accrued: iDue, intAdj, prinAdj, outAfter, overhang, closed: outAfter === 0 && overhang === 0, kind: 'po' };
+  return { accrued: money(iDue), intAdj: money(intAdj), prinAdj: money(prinAdj), outAfter: money(outAfter),
+    overhang: money(overhang), closed: outAfter < 0.005 && overhang < 0.005, kind: 'po' };
+}
+
+/* Recompute a drawdown and every one of its payments from scratch, in date
+   order. Used after a payment is deleted, back-dated or edited so the account
+   never drifts out of sync with its own history. */
+function replayDrawdown(dd, b, payments) {
+  const ordered = payments.slice().sort((a, c) => (a.date === c.date ? a.id - c.id : (a.date < c.date ? -1 : 1)));
+  const work = Object.assign({}, dd, { outPrin: +dd.poAmt || 0, intOverhang: 0, intCollected: 0, status: 'Open' });
+  const prior = [];
+  const applied = ordered.map((p) => {
+    const a = allocatePayment(work, b, p.amount, p.date, prior);
+    work.outPrin = a.outAfter;
+    work.intOverhang = a.overhang || 0;
+    work.intCollected = money(work.intCollected + a.intAdj);
+    work.status = a.closed ? 'Repaid' : 'Open';
+    // 'rotation' is a provenance marker, not an allocation result — keep it.
+    const kind = p.kind === 'rotation' ? 'rotation' : a.kind;
+    const out = Object.assign({}, p, { intAdj: a.intAdj, prinAdj: a.prinAdj, outAfter: a.outAfter, closed: a.closed, kind });
+    prior.push(out);
+    return out;
+  });
+  return {
+    state: { outPrin: work.outPrin, intOverhang: work.intOverhang, intCollected: work.intCollected, status: work.status },
+    payments: applied
+  };
+}
+
+/* Decorate a drawdown with live accrual for the API/UI. */
+function decorateDrawdown(dd, b, payments, asOf = td()) {
+  const acc = dd.loanType === 'io'
+    ? { total: ioNetDue(dd, b, asOf, payments || []), days: di(dd.bankDebit, asOf), odD: 0 }
+    : poAccrued(dd, b, asOf);
+  const repaid = dd.status === 'Repaid';
+  return Object.assign({}, dd, {
+    accrued: repaid ? 0 : money(acc.total),
+    daysOpen: acc.days,
+    overdueDays: repaid ? 0 : (acc.odD || 0),
+    dueDate: dueDate(dd, b),
+    dueTotal: repaid ? 0 : money((+dd.outPrin || 0) + acc.total)
+  });
 }
 
 /* current sanctioned limit = base + approved increases */
@@ -107,7 +160,7 @@ function currentLimit(store, bid) {
   const b = store.borrowers.find((x) => x.id === bid);
   if (!b) return 0;
   const inc = (store.limitHistory || []).filter((l) => l.borrowerId === bid).reduce((s, l) => s + (+l.incrAmt || 0), 0);
-  return (+b.limit || 0) + inc;
+  return money((+b.limit || 0) + inc);
 }
 
 /* 1-year renewal status from the latest sanction / limit event */
@@ -139,6 +192,7 @@ function calcIRR(flows) {
       dnpv -= cf.amount * (cf.t / 365) / ((1 + r) * disc);
     });
     if (Math.abs(npv) < 0.01) break;
+    if (!dnpv) break;
     r = r - npv / dnpv;
     if (r < -0.999) r = -0.999;
     if (r > 100) r = 100;
@@ -165,32 +219,32 @@ function borrowerCashFlows(store, bid) {
      + interest accrued to date, so IRR reflects yield earned so far rather than
      treating an un-repaid (but performing) loan as a total loss. */
   const b = store.borrowers.find((x) => x.id === bid);
-  const today = new Date().toISOString().slice(0, 10);
+  const today = td();
   const tNow = Math.round((new Date(today) - earliest) / 86400000);
   dds.filter((d) => d.status !== 'Repaid').forEach((d) => {
-    const accrued = d.loanType === 'io' ? ioNetDue(d, b, today, store.payments) : poAccrued(d, b, today).total;
-    const value = (+d.outPrin || 0) + accrued;
+    const value = (+d.outPrin || 0) + accruedFor(d, b, today, store.payments);
     if (value > 0) flows.push({ t: tNow, amount: value });
   });
   return flows;
 }
 
 /* ---- consolidated ledger (auto-generated) ---- */
-function buildLedger(store, { borrowerId, from, to } = {}) {
+function buildLedger(store, { borrowerId, from, to, type } = {}) {
   const bName = (id) => (store.borrowers.find((b) => b.id === id) || {}).name || '—';
   let e = [];
   store.drawdowns.forEach((d) => {
-    e.push({ date: d.bankDebit, dir: 'out', type: d.rotatedFrom ? 'Rotation' : 'Disbursement',
+    e.push({ id: 'd' + d.id, date: d.bankDebit, dir: 'out', type: d.rotatedFrom ? 'Rotation' : 'Disbursement',
       borrowerId: d.borrowerId, borrowerName: bName(d.borrowerId), ref: d.ref || '',
       amount: d.disbursed, fee: d.fee || 0, gst: d.gstAmt || 0, adv: d.adv || 0,
       intAdj: null, prinAdj: null, outAfter: d.poAmt, rem: d.rem || '' });
   });
   store.payments.forEach((p) => {
     const d = store.drawdowns.find((x) => x.id === p.drawdownId) || {};
-    const sub = d.loanType === 'io'
-      ? (p.prinAdj > 0 ? 'IO Principal Repayment' : 'IO Interest Payment')
-      : (p.closed ? 'Full Repayment' : 'Partial Payment');
-    e.push({ date: p.date, dir: 'in', type: sub, borrowerId: p.borrowerId, borrowerName: bName(p.borrowerId),
+    const sub = p.kind === 'rotation' ? 'Rotation Settlement'
+      : d.loanType === 'io'
+        ? (p.prinAdj > 0 ? 'IO Principal Repayment' : 'IO Interest Payment')
+        : (p.closed ? 'Full Repayment' : 'Partial Payment');
+    e.push({ id: 'p' + p.id, date: p.date, dir: 'in', type: sub, borrowerId: p.borrowerId, borrowerName: bName(p.borrowerId),
       ref: p.ref || d.ref || '', amount: p.amount, fee: 0, gst: 0, adv: 0,
       intAdj: p.intAdj, prinAdj: p.prinAdj, outAfter: p.outAfter, rem: p.rem || '' });
   });
@@ -198,6 +252,7 @@ function buildLedger(store, { borrowerId, from, to } = {}) {
   if (borrowerId) e = e.filter((x) => x.borrowerId === borrowerId);
   if (from) e = e.filter((x) => x.date >= from);
   if (to) e = e.filter((x) => x.date <= to);
+  if (type === 'out' || type === 'in') e = e.filter((x) => x.dir === type);
   return e;
 }
 
@@ -209,27 +264,37 @@ function borrowerSummary(store, bid, asOf = td()) {
   const pays = store.payments.filter((p) => p.borrowerId === bid);
   const open = dds.filter((d) => d.status !== 'Repaid');
   const outstanding = open.reduce((s, d) => s + (+d.outPrin || 0), 0);
-  let accruedOpen = 0, overdueDays = 0;
+  let accruedOpen = 0, overdueDays = 0, overdueAmount = 0;
   open.forEach((d) => {
     if (d.loanType === 'io') accruedOpen += ioNetDue(d, b, asOf, pays);
-    else { const a = poAccrued(d, b, asOf); accruedOpen += a.total; overdueDays = Math.max(overdueDays, a.odD); }
+    else {
+      const a = poAccrued(d, b, asOf);
+      accruedOpen += a.total;
+      if (a.odD > 0) { overdueDays = Math.max(overdueDays, a.odD); overdueAmount += (+d.outPrin || 0); }
+    }
   });
   const advCollected = dds.reduce((s, d) => s + (+d.adv || 0), 0);
   const feeCollected = dds.reduce((s, d) => s + (+d.fee || 0), 0);
   const gstCollected = dds.reduce((s, d) => s + (+d.gstAmt || 0), 0);
   const intCollected = pays.reduce((s, p) => s + (+p.intAdj || 0), 0);
+  const principalRepaid = pays.reduce((s, p) => s + (+p.prinAdj || 0), 0);
   const limit = currentLimit(store, bid);
+  const lastActivity = [...dds.map((d) => d.bankDebit), ...pays.map((p) => p.date)].sort().pop() || null;
   return {
-    borrowerId: bid, name: b.name, loanType: b.loanType, rate: b.rate, asOf,
-    limit, drawn: dds.reduce((s, d) => s + (+d.poAmt || 0), 0),
-    disbursedNet: dds.reduce((s, d) => s + (+d.disbursed || 0), 0),
-    outstanding, available: Math.max(0, limit - outstanding),
+    borrowerId: bid, name: b.name, slug: b.slug, biz: b.biz, loanType: b.loanType, rate: b.rate,
+    tenure: b.tenure, tenureUnit: b.tenureUnit, sanctionDate: b.sanctionDate, isSample: !!b.isSample, asOf,
+    limit, baseLimit: money(b.limit), limitIncreases: money(limit - (+b.limit || 0)),
+    drawn: money(dds.reduce((s, d) => s + (+d.poAmt || 0), 0)),
+    disbursedNet: money(dds.reduce((s, d) => s + (+d.disbursed || 0), 0)),
+    outstanding: money(outstanding), available: money(Math.max(0, limit - outstanding)),
     utilPct: limit > 0 ? +(outstanding / limit * 100).toFixed(1) : 0,
-    advCollected, feeCollected, gstCollected, intCollected,
-    interestEarned: advCollected + intCollected,
-    incomeBooked: advCollected + intCollected + feeCollected,
-    accruedOpen, overdueDays,
-    activeDrawdowns: open.length, totalDrawdowns: dds.length,
+    advCollected: money(advCollected), feeCollected: money(feeCollected), gstCollected: money(gstCollected),
+    intCollected: money(intCollected), principalRepaid: money(principalRepaid),
+    interestEarned: money(advCollected + intCollected),
+    incomeBooked: money(advCollected + intCollected + feeCollected),
+    accruedOpen: money(accruedOpen), overdueDays, overdueAmount: money(overdueAmount),
+    activeDrawdowns: open.length, totalDrawdowns: dds.length, totalPayments: pays.length,
+    lastActivity,
     irr: calcIRR(borrowerCashFlows(store, bid)),
     renewal: renewalStatus(store, bid)
   };
@@ -238,25 +303,74 @@ function borrowerSummary(store, bid, asOf = td()) {
 /* ---- portfolio-level rollup (dashboard) ---- */
 function portfolio(store, asOf = td()) {
   const sums = store.borrowers.map((b) => borrowerSummary(store, b.id, asOf));
-  const sum = (k) => sums.reduce((s, x) => s + (x[k] || 0), 0);
+  const sum = (k) => money(sums.reduce((s, x) => s + (x[k] || 0), 0));
+  const sanctioned = money(store.borrowers.reduce((s, b) => s + currentLimit(store, b.id), 0));
+  const outstanding = sum('outstanding');
   return {
     borrowers: store.borrowers.length,
-    sanctioned: store.borrowers.reduce((s, b) => s + currentLimit(store, b.id), 0),
-    outstanding: sum('outstanding'),
+    sanctioned, outstanding,
+    available: money(Math.max(0, sanctioned - outstanding)),
+    utilPct: sanctioned > 0 ? +(outstanding / sanctioned * 100).toFixed(1) : 0,
+    drawn: sum('drawn'),
     disbursedNet: sum('disbursedNet'),
     interestEarned: sum('interestEarned'),
     feeCollected: sum('feeCollected'),
+    gstCollected: sum('gstCollected'),
     incomeBooked: sum('incomeBooked'),
     accruedOpen: sum('accruedOpen'),
+    overdueAmount: sum('overdueAmount'),
     activeDrawdowns: store.drawdowns.filter((d) => d.status !== 'Repaid').length,
     totalDrawdowns: store.drawdowns.length,
-    asOf
+    asOf,
+    byBorrower: sums.sort((a, b) => b.outstanding - a.outstanding)
   };
 }
 
+/* ---- monthly disbursed / collected series for the dashboard chart ---- */
+function monthlySeries(store, months = 6) {
+  const keys = [];
+  const now = new Date();
+  for (let i = months - 1; i >= 0; i--) {
+    const d = new Date(now.getFullYear(), now.getMonth() - i, 1);
+    keys.push(d.toISOString().slice(0, 7));
+  }
+  const blank = () => keys.reduce((m, k) => (m[k] = 0, m), {});
+  const out = blank(), inn = blank(), interest = blank();
+  store.drawdowns.forEach((d) => { const k = String(d.bankDebit).slice(0, 7); if (k in out) out[k] += +d.poAmt || 0; });
+  store.payments.forEach((p) => {
+    const k = String(p.date).slice(0, 7);
+    if (k in inn) { inn[k] += +p.amount || 0; interest[k] += +p.intAdj || 0; }
+  });
+  return keys.map((k) => ({
+    month: k,
+    label: new Date(k + '-01').toLocaleString('en-IN', { month: 'short' }),
+    disbursed: money(out[k]), collected: money(inn[k]), interest: money(interest[k])
+  }));
+}
+
+/* ---- ageing buckets across all open drawdowns ---- */
+function ageing(store, asOf = td()) {
+  const buckets = [
+    { key: 'current', label: 'Within tenure', amount: 0, count: 0 },
+    { key: '1-30', label: '1–30 days overdue', amount: 0, count: 0 },
+    { key: '31-60', label: '31–60 days overdue', amount: 0, count: 0 },
+    { key: '61-90', label: '61–90 days overdue', amount: 0, count: 0 },
+    { key: '90+', label: '90+ days overdue', amount: 0, count: 0 }
+  ];
+  store.drawdowns.filter((d) => d.status !== 'Repaid').forEach((d) => {
+    const b = store.borrowers.find((x) => x.id === d.borrowerId);
+    if (!b) return;
+    const odD = d.loanType === 'io' ? 0 : poAccrued(d, b, asOf).odD;
+    const i = odD <= 0 ? 0 : odD <= 30 ? 1 : odD <= 60 ? 2 : odD <= 90 ? 3 : 4;
+    buckets[i].amount = money(buckets[i].amount + (+d.outPrin || 0));
+    buckets[i].count += 1;
+  });
+  return buckets;
+}
+
 module.exports = {
-  round, dr, td, di, addYearISO, tenureDays, advance, feeCalc, computeDrawdown,
-  poAccrued, ioAccrued, ioCollected, ioNetDue, allocatePayment,
+  money, dr, td, di, addYearISO, addDaysISO, tenureDays, dueDate, advance, feeCalc, computeDrawdown,
+  poAccrued, ioAccrued, ioCollected, ioNetDue, accruedFor, allocatePayment, replayDrawdown, decorateDrawdown,
   currentLimit, renewalStatus, calcIRR, borrowerCashFlows,
-  buildLedger, borrowerSummary, portfolio
+  buildLedger, borrowerSummary, portfolio, monthlySeries, ageing
 };

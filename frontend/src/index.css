@@ -2,21 +2,148 @@
 @tailwind components;
 @tailwind utilities;
 
-body { @apply bg-slate-100 text-slate-800 font-sans antialiased; }
-.card { @apply bg-white rounded-2xl border border-slate-200/80 shadow-soft p-5; }
-.ctitle { @apply font-display font-bold text-navy-900 text-sm uppercase tracking-wide; }
-.btn { @apply inline-flex items-center gap-1.5 rounded-xl px-3.5 py-2 text-sm font-semibold border border-slate-300 bg-white hover:bg-slate-50 transition disabled:opacity-40 disabled:cursor-not-allowed; }
-.btn-p { @apply border-teal-600 bg-teal-600 text-white hover:bg-teal-500 hover:border-teal-500; }
-.btn-d { @apply border-rose-600 bg-rose-600 text-white hover:bg-rose-500; }
-.btn-g { @apply border-navy-900 bg-navy-900 text-white hover:bg-navy-800; }
-.btn-xs { @apply px-2.5 py-1 text-xs rounded-lg; }
-.inp { @apply w-full rounded-xl border border-slate-300 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-teal-500/40 focus:border-teal-500 bg-white; }
-.lbl { @apply block text-[11px] font-semibold uppercase tracking-wide text-slate-500 mb-1; }
-.chip { @apply inline-flex items-center gap-1 rounded-full px-2.5 py-0.5 text-[11px] font-semibold; }
-.tbl { @apply w-full; }
-.tbl th { @apply text-left text-[11px] uppercase tracking-wide text-slate-500 font-semibold px-3 py-2 border-b border-slate-200 whitespace-nowrap; }
-.tbl td { @apply px-3 py-2.5 border-b border-slate-100 text-sm align-middle; }
-.mono { font-family: 'JetBrains Mono', monospace; }
-.kv { @apply flex justify-between gap-4 py-1.5 text-sm border-b border-slate-100 last:border-0; }
-.tab { @apply px-3.5 py-2 text-sm font-semibold rounded-xl border border-transparent text-slate-500 hover:text-navy-900 hover:bg-slate-100 cursor-pointer; }
-.tab-on { @apply bg-navy-900 text-white hover:bg-navy-900 hover:text-white; }
+/* ===========================================================================
+   Valuefin Desk — design tokens
+   Dark-first glass surface. Chart marks are referenced by role, never raw hex,
+   and were validated against the --surface-chart value below.
+   =========================================================================== */
+:root {
+  color-scheme: dark;
+
+  --surface-chart: #15152a;
+  --text-primary: #f4f3ff;
+  --text-secondary: #a5a3c4;
+  --text-muted: #6f6d92;
+  --grid: rgba(255, 255, 255, .07);
+
+  /* categorical marks — validated all-pairs on the dark surface */
+  --series-1: #8069f5;
+  --series-2: #0fa0c9;
+
+  /* status + the ordinal overdue ramp (single hue, monotone lightness) */
+  --state-good: #22a06b;
+  --od-1: #8a3030;
+  --od-2: #b03c3c;
+  --od-3: #d75454;
+  --od-4: #fa8080;
+}
+
+* { -webkit-tap-highlight-color: transparent; }
+
+body {
+  @apply bg-ink-950 text-slate-200 font-sans antialiased;
+  background-image:
+    radial-gradient(60rem 40rem at 12% -10%, rgba(128, 105, 245, .18), transparent 60%),
+    radial-gradient(50rem 34rem at 92% 8%, rgba(255, 92, 200, .13), transparent 62%),
+    radial-gradient(46rem 30rem at 60% 104%, rgba(34, 211, 238, .10), transparent 60%);
+  background-attachment: fixed;
+}
+
+::-webkit-scrollbar { width: 10px; height: 10px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb { background: rgba(255, 255, 255, .09); border-radius: 99px; border: 2px solid transparent; background-clip: content-box; }
+::-webkit-scrollbar-thumb:hover { background: rgba(157, 139, 255, .35); background-clip: content-box; }
+
+@layer components {
+  /* ---------- surfaces ---------- */
+  .glass { @apply bg-white/[.045] backdrop-blur-xl border border-white/10 shadow-glass; }
+  .card { @apply glass rounded-3xl p-5; }
+  .card-tight { @apply glass rounded-2xl p-4; }
+  .card-hover { @apply transition duration-200 hover:border-white/20 hover:bg-white/[.07] hover:-translate-y-0.5 hover:shadow-lift; }
+
+  /* a 1px gradient hairline that reads as a neon edge */
+  .edge-glow { position: relative; }
+  .edge-glow::before {
+    content: ''; position: absolute; inset: 0; border-radius: inherit; padding: 1px;
+    background: linear-gradient(135deg, rgba(157, 139, 255, .55), rgba(34, 211, 238, .25) 45%, transparent 70%);
+    -webkit-mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
+    -webkit-mask-composite: xor; mask-composite: exclude; pointer-events: none;
+  }
+
+  /* ---------- type ---------- */
+  .h1 { @apply font-display font-bold text-[26px] leading-tight text-white tracking-tight; }
+  .h2 { @apply font-display font-bold text-lg text-white tracking-tight; }
+  .ctitle { @apply font-display font-semibold text-[13px] uppercase tracking-[.14em] text-slate-400; }
+  .lbl { @apply block text-[11px] font-semibold uppercase tracking-[.1em] text-slate-400 mb-1.5; }
+  .num { @apply font-mono tabular-nums; }
+  .grad-text { @apply bg-gradient-to-r from-neon-violet via-neon-pink to-neon-cyan bg-clip-text text-transparent; }
+
+  /* ---------- buttons ---------- */
+  .btn {
+    @apply inline-flex items-center justify-center gap-1.5 rounded-xl px-3.5 py-2 text-sm font-semibold
+           border border-white/12 bg-white/[.06] text-slate-200 transition duration-150
+           hover:bg-white/[.12] hover:border-white/25 hover:text-white
+           active:scale-[.97] disabled:opacity-35 disabled:cursor-not-allowed disabled:active:scale-100;
+  }
+  .btn-p {
+    @apply border-transparent text-white bg-gradient-to-r from-neon-indigo to-[#a855f7]
+           hover:from-[#8f79ff] hover:to-[#b563ff] hover:border-transparent shadow-glow;
+  }
+  .btn-d { @apply border-transparent bg-state-bad/90 text-white hover:bg-state-bad hover:border-transparent; }
+  .btn-ghost { @apply border-transparent bg-transparent hover:bg-white/[.08]; }
+  .btn-xs { @apply px-2.5 py-1 text-xs rounded-lg gap-1; }
+  .btn-icon { @apply h-9 w-9 p-0 rounded-xl; }
+
+  /* ---------- inputs ---------- */
+  .inp {
+    @apply w-full rounded-xl border border-white/12 bg-ink-900/70 px-3 py-2 text-sm text-slate-100
+           placeholder:text-slate-500 transition
+           focus:outline-none focus:border-neon-violet/60 focus:ring-4 focus:ring-neon-indigo/15;
+  }
+  select.inp { @apply appearance-none bg-no-repeat pr-9; background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='16' height='16' fill='none' stroke='%236f6d92' stroke-width='2' stroke-linecap='round'%3E%3Cpath d='m4 6 4 4 4-4'/%3E%3C/svg%3E"); background-position: right .7rem center; }
+  select.inp option { @apply bg-ink-850 text-slate-100; }
+  .inp[type="date"]::-webkit-calendar-picker-indicator { filter: invert(.7); cursor: pointer; }
+
+  /* ---------- chips ---------- */
+  .chip { @apply inline-flex items-center gap-1 rounded-full px-2.5 py-0.5 text-[11px] font-semibold border; }
+  .chip-slate { @apply chip bg-white/[.06] text-slate-300 border-white/10; }
+  .chip-violet { @apply chip bg-neon-indigo/15 text-neon-violet border-neon-indigo/30; }
+  .chip-cyan { @apply chip bg-neon-cyan/12 text-neon-cyan border-neon-cyan/25; }
+  .chip-pink { @apply chip bg-neon-pink/12 text-neon-pink border-neon-pink/25; }
+  .chip-good { @apply chip bg-state-good/15 text-emerald-300 border-state-good/30; }
+  .chip-warn { @apply chip bg-neon-amber/12 text-neon-amber border-neon-amber/25; }
+  .chip-bad { @apply chip bg-state-bad/15 text-rose-300 border-state-bad/30; }
+
+  /* ---------- tables ---------- */
+  .tbl { @apply w-full border-separate border-spacing-0; }
+  .tbl th {
+    @apply text-left text-[10px] uppercase tracking-[.12em] text-slate-400 font-semibold
+           px-3 py-2.5 border-b border-white/10 whitespace-nowrap sticky top-0 bg-ink-900/80 backdrop-blur z-10;
+  }
+  .tbl td { @apply px-3 py-2.5 border-b border-white/[.055] text-sm text-slate-300 align-middle; }
+  .tbl tbody tr { @apply transition-colors; }
+  .tbl tbody tr:hover td { @apply bg-white/[.04]; }
+  .tbl tbody tr:last-child td { @apply border-b-0; }
+
+  /* ---------- misc ---------- */
+  .kv { @apply flex items-center justify-between gap-4 py-2 text-sm border-b border-white/[.06] last:border-0; }
+  .tab {
+    @apply px-3.5 py-2 text-sm font-semibold rounded-xl border border-transparent text-slate-400
+           cursor-pointer transition hover:text-white hover:bg-white/[.07];
+  }
+  .tab-on { @apply bg-white/[.1] text-white border-white/15; }
+  .skel { @apply relative overflow-hidden rounded-xl bg-white/[.05]; }
+  .skel::after {
+    content: ''; position: absolute; inset: 0; transform: translateX(-100%);
+    background: linear-gradient(90deg, transparent, rgba(255, 255, 255, .07), transparent);
+    animation: shimmer 1.6s infinite;
+  }
+  .kbd { @apply inline-flex items-center rounded-md border border-white/15 bg-white/[.07] px-1.5 font-mono text-[10px] text-slate-400; }
+}
+
+/* the slow-moving colour field behind everything */
+.aurora { position: fixed; inset: -20%; z-index: -1; pointer-events: none; filter: blur(90px); opacity: .55; }
+.aurora span { position: absolute; display: block; border-radius: 50%; will-change: transform; }
+
+@media print {
+  body { background: #fff !important; color: #000 !important; }
+  .no-print, .aurora, aside, header { display: none !important; }
+  .card, .glass { background: #fff !important; border: 1px solid #ddd !important; box-shadow: none !important; backdrop-filter: none !important; }
+  .h1, .h2, .ctitle, .tbl td, .tbl th { color: #000 !important; }
+  .tbl th { position: static !important; background: #f4f4f4 !important; }
+  main { padding: 0 !important; max-width: none !important; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after { animation-duration: .001ms !important; animation-iteration-count: 1 !important; transition-duration: .001ms !important; }
+}
